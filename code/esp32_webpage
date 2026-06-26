@@ -4,6 +4,7 @@ i-connect ang esp32 sa 2.4G network
 local area network palang to
 i-upload ang code then open nyo serial monitor i cope ang ip address paste sa browser 
 auto refresh na yang page every 2secs
+i copy mo lang to sa arduino ide then ok na 
 */
 
 
