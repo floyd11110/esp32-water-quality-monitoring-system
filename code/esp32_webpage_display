@@ -1,0 +1,428 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ILI9341.h>
+
+
+
+
+const char* ssid = "wifi name";
+const char* password = "password";
+
+
+#define PH_PIN 34
+#define ONE_WIRE_BUS 27
+
+#define TFT_CS   5
+#define TFT_DC   2
+#define TFT_RST  4
+
+
+
+Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
+
+
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+
+
+WebServer server(80);
+
+
+float neutralVoltage = 2.40;   
+float slope = 0.18;            
+float normalTolerance = 0.10;  
+
+
+float phVoltage = 0.0;
+float estimatedPH = 7.0;
+float tempC = 0.0;
+
+String phStatus = "UNKNOWN";
+String tempStatus = "UNKNOWN";
+
+unsigned long lastSensorRead = 0;
+unsigned long lastTftUpdate = 0;
+
+
+void readSensors() {
+  const int samples = 100;
+  long sum = 0;
+  int maxRaw = 0;
+
+  for (int i = 0; i < samples; i++) {
+    int raw = analogRead(PH_PIN);
+    sum += raw;
+
+    if (raw > maxRaw) {
+      maxRaw = raw;
+    }
+
+    delay(3);
+  }
+
+  float rawAvg = sum / (float)samples;
+  phVoltage = rawAvg * (3.3 / 4095.0);
+
+
+  estimatedPH = 7.0 - ((phVoltage - neutralVoltage) / slope);
+
+  if (phVoltage > neutralVoltage + normalTolerance) {
+    phStatus = "ACIDIC";
+  }
+  else if (phVoltage < neutralVoltage - normalTolerance) {
+    phStatus = "BASIC";
+  }
+  else {
+    phStatus = "NORMAL";
+  }
+
+  if (maxRaw >= 4090) {
+    phStatus = "ADC HIGH";
+  }
+
+
+  sensors.requestTemperatures();
+  tempC = sensors.getTempCByIndex(0);
+
+  if (tempC == DEVICE_DISCONNECTED_C) {
+    tempStatus = "ERROR";
+  }
+  else if (tempC < 20.0) {
+    tempStatus = "COLD";
+  }
+  else if (tempC > 32.0) {
+    tempStatus = "HOT";
+  }
+  else {
+    tempStatus = "NORMAL";
+  }
+}
+
+
+uint16_t getPHStatusColor() {
+  if (phStatus == "ACIDIC") return ILI9341_RED;
+  if (phStatus == "BASIC") return ILI9341_CYAN;
+  if (phStatus == "NORMAL") return ILI9341_GREEN;
+  if (phStatus == "ADC HIGH") return ILI9341_YELLOW;
+  return ILI9341_WHITE;
+}
+
+uint16_t getTempStatusColor() {
+  if (tempStatus == "HOT") return ILI9341_RED;
+  if (tempStatus == "COLD") return ILI9341_CYAN;
+  if (tempStatus == "NORMAL") return ILI9341_GREEN;
+  if (tempStatus == "ERROR") return ILI9341_YELLOW;
+  return ILI9341_WHITE;
+}
+
+
+void drawTFTDashboard() {
+  tft.fillScreen(ILI9341_BLACK);
+
+
+  tft.fillRect(0, 0, 320, 36, ILI9341_DARKGREEN);
+  tft.setTextColor(ILI9341_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(10, 10);
+  tft.print("ESP32 HYDROPONICS");
+
+
+  tft.drawRoundRect(10, 50, 145, 75, 8, ILI9341_GREEN);
+  tft.setTextColor(ILI9341_GREEN);
+  tft.setTextSize(2);
+  tft.setCursor(20, 60);
+  tft.print("TEMP");
+
+  tft.setTextColor(ILI9341_WHITE);
+  tft.setTextSize(3);
+  tft.setCursor(20, 85);
+
+  if (tempC == DEVICE_DISCONNECTED_C) {
+    tft.print("ERR");
+  } else {
+    tft.print(tempC, 1);
+    tft.print("C");
+  }
+
+  tft.setTextColor(getTempStatusColor());
+  tft.setTextSize(1);
+  tft.setCursor(20, 113);
+  tft.print(tempStatus);
+
+
+  tft.drawRoundRect(165, 50, 145, 75, 8, ILI9341_CYAN);
+  tft.setTextColor(ILI9341_CYAN);
+  tft.setTextSize(2);
+  tft.setCursor(175, 60);
+  tft.print("pH");
+
+  tft.setTextColor(ILI9341_WHITE);
+  tft.setTextSize(3);
+  tft.setCursor(175, 85);
+  tft.print(estimatedPH, 2);
+
+  tft.setTextColor(getPHStatusColor());
+  tft.setTextSize(1);
+  tft.setCursor(175, 113);
+  tft.print(phStatus);
+
+
+  tft.drawRoundRect(10, 140, 300, 55, 8, ILI9341_YELLOW);
+  tft.setTextColor(ILI9341_YELLOW);
+  tft.setTextSize(2);
+  tft.setCursor(20, 153);
+  tft.print("pH VOLTAGE: ");
+  tft.setTextColor(ILI9341_WHITE);
+  tft.print(phVoltage, 3);
+  tft.print("V");
+
+  tft.drawRoundRect(10, 205, 300, 55, 8, ILI9341_GREEN);
+  tft.setTextColor(ILI9341_GREEN);
+  tft.setTextSize(2);
+  tft.setCursor(20, 218);
+  tft.print("TARGET pH: 5.5-6.5");
+
+  tft.setTextColor(ILI9341_WHITE);
+  tft.setTextSize(1);
+  tft.setCursor(20, 245);
+  tft.print("For accurate pH, use buffer calibration.");
+
+
+  tft.setTextColor(ILI9341_WHITE);
+  tft.setTextSize(1);
+  tft.setCursor(10, 285);
+  tft.print("Web: http://");
+  tft.print(WiFi.localIP());
+}
+
+
+String dashboardHTML() {
+  String html = "";
+
+  html += "<!DOCTYPE html><html lang='en'>";
+  html += "<head>";
+  html += "<meta charset='UTF-8'>";
+  html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  html += "<meta http-equiv='refresh' content='2'>";
+  html += "<title>Hydroponics Dashboard</title>";
+
+  html += "<style>";
+  html += "*{box-sizing:border-box;margin:0;padding:0;font-family:Arial,sans-serif;}";
+  html += "body{background:linear-gradient(135deg,#052e16,#14532d,#0f766e,#164e63);color:white;min-height:100vh;padding:20px;}";
+  html += ".container{max-width:1000px;margin:auto;}";
+  html += ".header{text-align:center;margin-bottom:25px;padding:24px;border-radius:24px;background:rgba(255,255,255,0.12);box-shadow:0 10px 30px rgba(0,0,0,0.30);border:1px solid rgba(255,255,255,0.15);}";
+  html += ".header h1{font-size:34px;margin-bottom:10px;color:#d9f99d;}";
+  html += ".header p{font-size:16px;color:#dcfce7;}";
+  html += ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:18px;}";
+  html += ".card{background:rgba(255,255,255,0.13);border:1px solid rgba(255,255,255,0.14);border-radius:22px;padding:24px;box-shadow:0 8px 22px rgba(0,0,0,0.28);}";
+  html += ".icon{font-size:38px;margin-bottom:12px;}";
+  html += ".label{font-size:14px;color:#dcfce7;margin-bottom:8px;letter-spacing:0.5px;text-transform:uppercase;}";
+  html += ".value{font-size:34px;font-weight:bold;margin-bottom:8px;}";
+  html += ".small{font-size:14px;color:#e2e8f0;}";
+  html += ".status{font-size:24px;font-weight:bold;padding:12px 16px;border-radius:14px;display:inline-block;margin-top:8px;}";
+  html += ".acid{background:#7f1d1d;color:#fecaca;}";
+  html += ".normal{background:#14532d;color:#bbf7d0;}";
+  html += ".base{background:#0c4a6e;color:#bae6fd;}";
+  html += ".warn{background:#78350f;color:#fde68a;}";
+  html += ".banner{margin-top:22px;padding:22px;text-align:center;border-radius:22px;background:rgba(255,255,255,0.10);box-shadow:0 8px 24px rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.12);color:#ecfccb;}";
+  html += ".footer{margin-top:25px;text-align:center;font-size:13px;color:#d1fae5;padding:14px;}";
+  html += "</style>";
+
+  html += "</head><body>";
+  html += "<div class='container'>";
+
+  html += "<div class='header'>";
+  html += "<h1>🌿 Hydroponics Monitoring Dashboard</h1>";
+  html += "<p>ESP32 pH + Water Temperature + TFT Display System</p>";
+  html += "</div>";
+
+  html += "<div class='grid'>";
+
+  html += "<div class='card'>";
+  html += "<div class='icon'>🌡️</div>";
+  html += "<div class='label'>Water Temperature</div>";
+
+  if (tempC == DEVICE_DISCONNECTED_C) {
+    html += "<div class='value'>Error</div>";
+    html += "<div class='small'>DS18B20 not detected</div>";
+  } else {
+    html += "<div class='value'>" + String(tempC, 2) + " &deg;C</div>";
+    html += "<div class='small'>" + String((tempC * 9.0 / 5.0) + 32.0, 2) + " &deg;F | " + tempStatus + "</div>";
+  }
+
+  html += "</div>";
+
+  html += "<div class='card'>";
+  html += "<div class='icon'>💧</div>";
+  html += "<div class='label'>pH Sensor Voltage</div>";
+  html += "<div class='value'>" + String(phVoltage, 3) + " V</div>";
+  html += "<div class='small'>Analog output from pH board</div>";
+  html += "</div>";
+
+  html += "<div class='card'>";
+  html += "<div class='icon'>🧪</div>";
+  html += "<div class='label'>Estimated pH Level</div>";
+  html += "<div class='value'>" + String(estimatedPH, 2) + "</div>";
+  html += "<div class='small'>Based on 2.40V neutral reference</div>";
+  html += "</div>";
+
+  html += "<div class='card'>";
+  html += "<div class='icon'>🥬</div>";
+  html += "<div class='label'>Hydroponics Target</div>";
+  html += "<div class='value'>5.5 - 6.5</div>";
+  html += "<div class='small'>Common pH range for leafy crops</div>";
+  html += "</div>";
+
+  html += "</div>";
+
+  html += "<div class='banner'>";
+  html += "<div style='font-size:18px;margin-bottom:10px;'>🌱 Water Condition Status</div>";
+
+  if (phStatus == "ACIDIC") {
+    html += "<div class='status acid'>ACIDIC</div>";
+  }
+  else if (phStatus == "BASIC") {
+    html += "<div class='status base'>BASIC / ALKALINE</div>";
+  }
+  else if (phStatus == "ADC HIGH") {
+    html += "<div class='status warn'>ADC HIGH</div>";
+  }
+  else {
+    html += "<div class='status normal'>NORMAL</div>";
+  }
+
+  html += "<div class='small' style='margin-top:14px;'>For accurate pH, calibrate using pH 4.00, pH 7.00, and pH 10.00 buffer solutions.</div>";
+  html += "</div>";
+
+  html += "<div class='footer'>";
+  html += "Auto-refresh every 2 seconds | ESP32 Hydroponics IoT Prototype";
+  html += "</div>";
+
+  html += "</div>";
+  html += "</body></html>";
+
+  return html;
+}
+
+
+void handleRoot() {
+  readSensors();
+  server.send(200, "text/html", dashboardHTML());
+}
+
+void handleData() {
+  readSensors();
+
+  String json = "{";
+  json += "\"temperature_c\":" + String(tempC, 2) + ",";
+  json += "\"ph_voltage\":" + String(phVoltage, 3) + ",";
+  json += "\"estimated_ph\":" + String(estimatedPH, 2) + ",";
+  json += "\"ph_status\":\"" + phStatus + "\",";
+  json += "\"temperature_status\":\"" + tempStatus + "\"";
+  json += "}";
+
+  server.send(200, "application/json", json);
+}
+
+
+void setup() {
+  Serial.begin(115200);
+
+  analogReadResolution(12);
+  analogSetAttenuation(ADC_11db);
+
+  sensors.begin();
+
+
+  tft.begin();
+  tft.setRotation(3);
+  tft.fillScreen(ILI9341_BLACK);
+
+  tft.setTextColor(ILI9341_GREEN);
+  tft.setTextSize(2);
+  tft.setCursor(10, 20);
+  tft.println("HYDRO DASHBOARD");
+
+  tft.setTextColor(ILI9341_WHITE);
+  tft.setCursor(10, 55);
+  tft.println("Connecting WiFi...");
+
+
+  WiFi.begin(ssid, password);
+
+  Serial.print("Connecting to WiFi");
+
+  int attempts = 0;
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+
+    if (attempts > 40) {
+      Serial.println();
+      Serial.println("WiFi connection failed.");
+
+      tft.fillScreen(ILI9341_BLACK);
+      tft.setTextColor(ILI9341_RED);
+      tft.setTextSize(2);
+      tft.setCursor(10, 40);
+      tft.println("WiFi Failed");
+      tft.setCursor(10, 80);
+      tft.println("Check SSID/PASS");
+
+      delay(3000);
+      ESP.restart();
+    }
+  }
+
+  Serial.println();
+  Serial.println("WiFi connected!");
+  Serial.print("Open dashboard: http://");
+  Serial.println(WiFi.localIP());
+
+  tft.fillScreen(ILI9341_BLACK);
+  tft.setTextColor(ILI9341_GREEN);
+  tft.setTextSize(2);
+  tft.setCursor(10, 20);
+  tft.println("WiFi Connected");
+
+  tft.setTextColor(ILI9341_WHITE);
+  tft.setTextSize(1);
+  tft.setCursor(10, 60);
+  tft.print("IP: ");
+  tft.println(WiFi.localIP());
+
+  delay(2000);
+
+
+  server.on("/", handleRoot);
+  server.on("/data", handleData);
+  server.begin();
+
+  Serial.println("Web server started.");
+
+  readSensors();
+  drawTFTDashboard();
+}
+
+
+void loop() {
+  server.handleClient();
+
+
+  if (millis() - lastSensorRead >= 2000) {
+    lastSensorRead = millis();
+    readSensors();
+  }
+
+
+  if (millis() - lastTftUpdate >= 2000) {
+    lastTftUpdate = millis();
+    drawTFTDashboard();
+  }
+}
